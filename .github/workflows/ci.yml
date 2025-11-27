@@ -1,33 +1,28 @@
-import os
-import tempfile
-import shutil
-import io
-import sys
-import pytest
-from book_downloader import safe_filename, transcript_to_pdf, audiobook_to_pdf
+name: CI
 
-def test_safe_filename():
-    s = 'Pride & Prejudice: An "example"/test?'
-    out = safe_filename(s)
-    assert '&' not in out and '"' not in out and '/' not in out
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
 
-def test_transcript_to_pdf_creates_file(tmp_path):
-    # Create a small transcript
-    t = tmp_path / "transcript.txt"
-    t.write_text("This is a test transcript.\n\nThis is paragraph two.", encoding="utf-8")
-    pdf_path = tmp_path / "out.pdf"
-    ok = transcript_to_pdf(str(t), str(pdf_path), title="Test Title", author="Author")
-    assert ok
-    assert pdf_path.exists()
-    # Minimum size check
-    assert pdf_path.stat().st_size > 0
-
-def test_audiobook_to_pdf_no_transcript_creates_metadata_pdf(tmp_path):
-    # No transcript and no whisper: should create metadata-only pdf
-    pdf_path = tmp_path / "audio_meta.pdf"
-    ok = audiobook_to_pdf(None, None, str(pdf_path), title="Audio Book Title", author="Author", use_whisper=False)
-    assert ok
-    assert pdf_path.exists()
-    assert pdf_path.stat().st_size > 0
-
-# Note: We do not test Whisper transcription here to keep CI light and avoid installing heavy deps.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.10, 3.11]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+      - name: Run tests
+        run: |
+          pytest -q
