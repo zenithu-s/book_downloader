@@ -1,0 +1,226 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Book Downloader UI</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: 24px auto; }
+    label { display:block; margin-top:8px; }
+    .result { border: 1px solid #ddd; padding:8px; margin:8px 0; }
+    button { margin-left:6px; }
+    pre { background:#f7f7f7; padding:8px; }
+  </style>
+</head>
+<body>
+  <h2>Book Downloader — Web UI</h2>
+
+  <section>
+    <h3>Search</h3>
+    <label>Title: <input id="title" /></label>
+    <label>Author: <input id="author" /></label>
+    <label>Sites:
+      <select id="sites" multiple size="2">
+        <option value="archive" selected>Internet Archive</option>
+        <option value="gutenberg" selected>Project Gutenberg (Gutendex)</option>
+      </select>
+    </label>
+    <button id="searchBtn">Search</button>
+    <div id="searchStatus"></div>
+  </section>
+
+  <section>
+    <h3>Results</h3>
+    <div id="iaResults"><strong>Internet Archive</strong></div>
+    <div id="gutResults"><strong>Gutenberg</strong></div>
+  </section>
+
+  <section>
+    <h3>Standard Ebooks (direct URL)</h3>
+    <label>URL: <input id="standardUrl" style="width:70%"/></label>
+    <label><input type="checkbox" id="convertStandard"/> Convert EPUB→PDF</label>
+    <button id="downloadStandard">Download</button>
+    <div id="standardStatus"></div>
+  </section>
+
+  <section>
+    <h3>Audiobook → PDF</h3>
+    <label>Title: <input id="audioTitle"/></label>
+    <label>Author: <input id="audioAuthor"/></label>
+    <label>Transcript file: <input type="file" id="transcriptFile"/></label>
+    <label>Audio file (to transcribe with Whisper): <input type="file" id="audioFile"/></label>
+    <label><input type="checkbox" id="useWhisper"/> Use Whisper (if available on server)</label>
+    <button id="makeAudioPdf">Create PDF</button>
+    <div id="audioStatus"></div>
+  </section>
+
+  <section>
+    <h3>Downloads</h3>
+    <div id="downloads"></div>
+  </section>
+
+<script>
+async function postJson(url, data) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(data)
+  });
+  return res.json();
+}
+
+document.getElementById("searchBtn").addEventListener("click", async () => {
+  const title = document.getElementById("title").value;
+  const author = document.getElementById("author").value;
+  const sitesSel = Array.from(document.getElementById("sites").selectedOptions).map(o=>o.value);
+  document.getElementById("searchStatus").innerText = "Searching...";
+  try {
+    const res = await postJson("/api/search", {title, author, sites: sitesSel});
+    document.getElementById("searchStatus").innerText = "Done.";
+    renderResults(res);
+  } catch (e) {
+    document.getElementById("searchStatus").innerText = "Error: " + e;
+  }
+});
+
+function renderResults(res) {
+  const iaDiv = document.getElementById("iaResults");
+  iaDiv.innerHTML = "<strong>Internet Archive</strong>";
+  if (res.archive_error) {
+    iaDiv.innerHTML += "<div style='color:red'>Error: "+res.archive_error+"</div>";
+  } else {
+    (res.archive||[]).forEach(it => {
+      const d = document.createElement("div");
+      d.className = "result";
+      d.innerHTML = `<b>${it.title||it.identifier}</b><div>creator: ${it.creator||""}</div>
+        <div>best format: ${it._best_format||"n/a"} ${it._best_name||""}</div>
+        <button onclick='downloadIA("${it.identifier}", "${it._best_name}", ${it._best_format?"true":"false"})'>Download</button>`;
+      iaDiv.appendChild(d);
+    });
+  }
+
+  const gutDiv = document.getElementById("gutResults");
+  gutDiv.innerHTML = "<strong>Gutenberg</strong>";
+  if (res.gutenberg_error) {
+    gutDiv.innerHTML += "<div style='color:red'>Error: "+res.gutenberg_error+"</div>";
+  } else {
+    (res.gutenberg||[]).forEach(it => {
+      const d = document.createElement("div");
+      d.className = "result";
+      // show available formats keys (client can choose)
+      const formats = Object.keys(it.formats||{}).slice(0,5).join(", ");
+      d.innerHTML = `<b>${it.title}</b><div>authors: ${(it.authors||[]).map(a=>a.name).join(", ")}</div>
+        <div>formats: ${formats}</div>
+        <button onclick='downloadGuten("${encodeURIComponent(JSON.stringify(it.formats||{}))}", "${it.title.replace(/"/g,"'")}")'>Download best</button>`;
+      gutDiv.appendChild(d);
+    });
+  }
+}
+
+async function downloadIA(identifier, filename, hasFormat) {
+  if (!identifier || !filename) {
+    alert("No downloadable file detected for this item.");
+    return;
+  }
+  const convert = confirm("Convert EPUB→PDF if downloaded file is EPUB? OK = convert");
+  document.getElementById("searchStatus").innerText = "Downloading from Internet Archive...";
+  try {
+    const res = await postJson("/api/download", {source:"archive", identifier: identifier, filename: filename, convert: convert});
+    if (res.ok) {
+      addDownload(res.path);
+    } else {
+      alert("Error: " + (res.error || "unknown"));
+    }
+  } catch (e) {
+    alert("Download failed: " + e);
+  } finally {
+    document.getElementById("searchStatus").innerText = "";
+  }
+}
+
+async function downloadGuten(formatsJson, title) {
+  const formats = JSON.parse(decodeURIComponent(formatsJson));
+  // choose best (pdf then epub)
+  let url = null;
+  for (const k of Object.keys(formats)) {
+    if (k.toLowerCase().includes("pdf")) { url = formats[k]; break; }
+  }
+  if (!url) {
+    for (const k of Object.keys(formats)) {
+      if (k.toLowerCase().includes("epub")) { url = formats[k]; break; }
+    }
+  }
+  if (!url) { alert("No suitable format URL found."); return; }
+  const suggested = title + (url.includes(".epub") ? ".epub" : (url.includes(".pdf")? ".pdf": ""));
+  const convert = confirm("Convert EPUB→PDF if downloaded file is EPUB? OK = convert");
+  document.getElementById("searchStatus").innerText = "Downloading from Gutenberg...";
+  try {
+    const res = await postJson("/api/download", {source:"gutenberg", url: url, suggested: suggested, convert: convert});
+    if (res.ok) {
+      addDownload(res.path);
+    } else {
+      alert("Error: " + (res.error || "unknown"));
+    }
+  } catch (e) {
+    alert("Download failed: " + e);
+  } finally {
+    document.getElementById("searchStatus").innerText = "";
+  }
+}
+
+document.getElementById("downloadStandard").addEventListener("click", async () => {
+  const url = document.getElementById("standardUrl").value;
+  const convert = document.getElementById("convertStandard").checked;
+  document.getElementById("standardStatus").innerText = "Downloading...";
+  try {
+    const res = await postJson("/api/download", {source:"standard", standard_url: url, convert: convert});
+    if (res.ok) addDownload(res.path);
+    else alert("Error: " + (res.error || "unknown"));
+  } catch (e) {
+    alert("Failed: " + e);
+  } finally {
+    document.getElementById("standardStatus").innerText = "";
+  }
+});
+
+document.getElementById("makeAudioPdf").addEventListener("click", async () => {
+  const title = document.getElementById("audioTitle").value || "audiobook";
+  const author = document.getElementById("audioAuthor").value || "";
+  const useWhisper = document.getElementById("useWhisper").checked;
+  const transcriptFile = document.getElementById("transcriptFile").files[0];
+  const audioFile = document.getElementById("audioFile").files[0];
+
+  const form = new FormData();
+  form.append("title", title);
+  form.append("author", author);
+  form.append("use_whisper", useWhisper ? "true" : "false");
+  if (transcriptFile) form.append("transcript", transcriptFile);
+  if (audioFile) form.append("audio", audioFile);
+
+  document.getElementById("audioStatus").innerText = "Uploading and converting...";
+  try {
+    const res = await fetch("/api/audiobook", {method:"POST", body: form});
+    const j = await res.json();
+    if (j.ok) addDownload(j.path);
+    else alert("Error: " + (j.error || "unknown"));
+  } catch (e) {
+    alert("Failed: " + e);
+  } finally {
+    document.getElementById("audioStatus").innerText = "";
+  }
+});
+
+function addDownload(path) {
+  const d = document.getElementById("downloads");
+  const a = document.createElement("a");
+  // path is server-side path; create URL relative to /downloads/
+  const filename = path.split("/").pop();
+  a.href = "/downloads/" + encodeURIComponent(filename);
+  a.innerText = filename;
+  a.target = "_blank";
+  const div = document.createElement("div");
+  div.appendChild(a);
+  d.prepend(div);
+}
+</script>
+</body>
+</html>
