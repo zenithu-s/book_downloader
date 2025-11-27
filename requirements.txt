@@ -1,0 +1,9 @@
+requests>=2.28
+tqdm>=4.64
+ebooklib>=0.18
+reportlab>=4.0
+pypandoc>=1.8
+beautifulsoup4>=4.12
+pydub>=0.25
+whisper>=1.0.0 ; extra == "whisper"
+# Note: whisper requires ffmpeg and may require additional dependencies.
